@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LifeLineSafetyResponse",
+  "description": "Standard output contract produced by Person 1's LifeLine Safety Rule Engine",
+  "type": "object",
+  "required": [
+    "priority",
+    "source",
+    "rule_triggered",
+    "rule_ids",
+    "red_flags",
+    "rationale",
+    "uncertain",
+    "pediatric_rule_not_supported",
+    "llm_allowed",
+    "security_alerts"
+  ],
+  "properties": {
+    "priority": {
+      "type": "string",
+      "enum": ["EMERGENCY", "NO_HARD_RED_FLAG", "ESCALATE"]
+    },
+    "source": {
+      "type": "string",
+      "enum": ["HARD_RULE", "SAFETY_ENGINE"]
+    },
+    "rule_triggered": {
+      "type": "boolean"
+    },
+    "rule_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "red_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "uncertain": {
+      "type": "boolean"
+    },
+    "pediatric_rule_not_supported": {
+      "type": "boolean"
+    },
+    "llm_allowed": {
+      "type": "boolean"
+    },
+    "security_alerts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}
