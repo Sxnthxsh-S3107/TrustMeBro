@@ -8,7 +8,7 @@ import {
   getIntakeResult,
   submitToDecisionEngine,
 } from "../services/api";
-import { speak, stop as stopSpeech, hasTamilVoice } from "../services/ttsService";
+import { speak, stop as stopSpeech, clearAudioCache } from "../services/ttsService";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // STATE MACHINE STATES:
@@ -35,7 +35,6 @@ export default function PatientConsultation() {
   
   // TTS Fallback States
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
-  const [tamilVoiceError, setTamilVoiceError] = useState(false);
 
   const navigate = useNavigate();
 
@@ -102,9 +101,10 @@ export default function PatientConsultation() {
 
     speechRecognizerRef.current = recognizer;
 
-    // Cleanup speech synthesis on unmount
+    // Cleanup: cancel any active speech and release cached audio blob URLs
     return () => {
       stopSpeech();
+      clearAudioCache();
     };
   }, []);
 
@@ -112,10 +112,10 @@ export default function PatientConsultation() {
    * Triggers the browser text-to-speech for the question.
    */
   const triggerTTS = (text, lang) => {
-    // Clear previous fallbacks
+    // Clear previous fallback banners
     setAutoplayBlocked(false);
-    setTamilVoiceError(false);
 
+    // Immediately enter SPEAKING so microphone is locked
     setState("SPEAKING");
 
     speak(text, lang, {
@@ -126,12 +126,14 @@ export default function PatientConsultation() {
         setState("WAITING_FOR_PATIENT");
       },
       onError: (err) => {
-        console.warn("[ttsService] Speak error/warning:", err.message || err);
-        if (err.message === "tamil_voice_unavailable") {
-          setTamilVoiceError(true);
-        } else {
+        const msg = err?.message || "";
+        console.warn("[PatientConsultation] TTS error:", msg);
+        if (msg === "autoplay_blocked") {
+          // Browser blocked autoplay — show tap-to-hear banner
           setAutoplayBlocked(true);
         }
+        // For all errors (including cloud failures): question stays visible,
+        // patient's turn is unblocked so consultation can continue.
         setState("WAITING_FOR_PATIENT");
       },
     });
@@ -312,6 +314,7 @@ export default function PatientConsultation() {
 
       if (data.status === "completed" || !data.next_question) {
         setState("COMPLETED");
+        clearAudioCache();
         const finalJson = await getIntakeResult(sessionIdRef.current);
         await submitToDecisionEngine(finalJson);
         navigate(`/patient/status/${sessionIdRef.current}`);
@@ -421,11 +424,7 @@ export default function PatientConsultation() {
             </div>
           )}
 
-          {tamilVoiceError && (
-            <div style={{ padding: "0.75rem 1rem", background: "#fef2f2", border: "1px solid #fee2e2", borderRadius: "8px", color: "#b91c1c", marginBottom: "1.5rem", fontSize: "0.95rem" }}>
-              {t.tamilVoiceMissing}
-            </div>
-          )}
+
 
           {/* Status Label (AI is speaking vs Patient's turn) */}
           <div style={{ marginBottom: "2rem", minHeight: "2rem" }}>
