@@ -1,85 +1,5 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-<<<<<<< Updated upstream
-  "title": "IntakeSchema",
-  "description": "Schema for Person 2 Voice Intake & NLP standardized patient encounter data",
-  "type": "object",
-  "required": [
-    "session_id",
-    "language",
-    "chief_complaint",
-    "duration",
-    "medications",
-    "history",
-    "follow_up_answers",
-    "raw_transcript"
-  ],
-  "properties": {
-    "session_id": {
-      "type": "string",
-      "description": "Unique session identifier for the intake interaction"
-    },
-    "patient_id": {
-      "type": ["string", "null"],
-      "description": "Optional patient identifier if known or provided"
-    },
-    "language": {
-      "type": "string",
-      "enum": ["en", "ta"],
-      "description": "Language code selected by the patient (en: English, ta: Tamil)"
-    },
-    "chief_complaint": {
-      "type": "string",
-      "enum": [
-        "chest pain",
-        "headache",
-        "abdominal pain",
-        "breathing difficulty",
-        "unknown"
-      ],
-      "description": "Canonical normalized chief complaint in English"
-    },
-    "duration": {
-      "type": "string",
-      "description": "Normalized symptom onset duration (e.g. '2 hours', '1 day') or verbatim text if non-standard"
-    },
-    "medications": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "List of normalized medication names or ['none']"
-    },
-    "history": {
-      "type": "string",
-      "description": "Normalized medical history (e.g. 'diabetic', 'hypertension', 'none')"
-    },
-    "follow_up_answers": {
-      "type": "object",
-      "description": "Map of adaptive clinical follow-up question keys to boolean responses",
-      "additionalProperties": {
-        "type": "boolean"
-      }
-    },
-    "raw_transcript": {
-      "type": "string",
-      "description": "Verbatim transcript of patient responses in their native spoken language"
-    },
-    "raw_transcripts": {
-      "type": "object",
-      "description": "Per-question verbatim transcripts in patient's native language",
-      "additionalProperties": {
-        "type": "string"
-      }
-    },
-    "status": {
-      "type": "string",
-      "enum": ["in_progress", "completed", "ambiguous", "unknown"],
-      "description": "Intake processing status"
-    }
-  },
-  "additionalProperties": true
-=======
   "title": "LifeLineIntakeData",
   "description": "Structured clinical facts payload received by Person 1's Safety Rule Engine",
   "type": "object",
@@ -132,5 +52,4 @@
     "diastolic_bp": { "type": ["number", "null"] },
     "temperature": { "type": ["number", "null"] }
   }
->>>>>>> Stashed changes
 }
