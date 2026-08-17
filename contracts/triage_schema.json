@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "patient_id": { "type": "string" },
+    "priority": { "type": "string", "enum": ["emergency", "same-day", "routine"] },
+    "rationale": { "type": "string" },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "source": { "type": "string", "enum": ["rule_engine", "llm"] },
+    "chief_complaint": { "type": "string" },
+    "duration": { "type": "string" },
+    "red_flag": { "type": "boolean" },
+    "relevant_history": { "type": "string" },
+    "assigned_doctor": { "type": ["string", "null"] },
+    "assignment_reason": { "type": ["string", "null"] }
+  },
+  "required": ["priority", "rationale", "source"]
+}
