@@ -11,17 +11,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from dotenv import load_dotenv
 
 try:
     from voice_intake.app.question_flow import SessionManager
     from voice_intake.app.asr import get_asr_service, WhisperASRService, MockASRService
+    from voice_intake.app.tts import TTSServiceBackend
 except ImportError:
     from question_flow import SessionManager
     from asr import get_asr_service, WhisperASRService, MockASRService
+    from tts import TTSServiceBackend
 
 load_dotenv()
+
+# Initialize TTS backend
+tts_backend_service = TTSServiceBackend()
+
 
 # Initialize Flask app with disabled static cache for development
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -219,6 +225,31 @@ def transcribe_audio():
     except Exception as e:
         print(f"[ASR] Transcription failed: {e}")
         return jsonify({"error": str(e), "error_type": "transcription_error", "success": False}), 500
+
+
+@app.route("/tts", methods=["POST", "OPTIONS"])
+def text_to_speech():
+    """
+    Convert text to speech.
+    Request JSON: {"text": "உங்களுக்கு...", "language": "ta-IN"}
+    Response: audio/mpeg or audio/wav
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    data = request.get_json(silent=True) or {}
+    text = data.get("text")
+    language = data.get("language", "ta-IN")
+
+    if not text or not text.strip():
+        return jsonify({"error": "Missing 'text' parameter"}), 400
+
+    try:
+        audio_bytes, mime_type = tts_backend_service.synthesize(text.strip(), language)
+        return Response(audio_bytes, mimetype=mime_type)
+    except Exception as e:
+        print(f"[TTS Route] Failed to synthesize speech: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/intake/answer", methods=["POST", "OPTIONS"])

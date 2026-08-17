@@ -47,6 +47,7 @@ export const normalizePatientCard = (patient) => {
     chiefComplaint: patient.chief_complaint || "Not specified",
     duration: patient.duration || "Not specified",
     redFlag: Boolean(patient.red_flag),
+    safetyRedFlags: patient.safety_red_flags || [],
     history: patient.relevant_history || "None",
     assignedDoctor: patient.assigned_doctor,
     assignmentReason: patient.assignment_reason,

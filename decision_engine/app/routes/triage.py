@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from ..db import get_db
@@ -78,10 +79,22 @@ def triage_patient(intake: dict, db: Session = Depends(get_db)):
     llm_allowed    = safety_result.get("llm_allowed", True)
     rule_triggered = safety_result.get("rule_triggered", False)
     red_flags_list = safety_result.get("red_flags", [])
+    rule_ids_list  = safety_result.get("rule_ids", [])
     security_alerts= safety_result.get("security_alerts", [])
     p1_rationale   = safety_result.get("rationale", "")
 
-    # ── STEP 2: Route by Person 1 result ──
+    # ── Build canonical safety_red_flags array (structured for frontend display) ──
+    # Person 1 returns red_flags as List[str] and rule_ids as List[str].
+    # We combine them into a structured list of {rule_id, message} objects.
+    safety_red_flags_structured = []
+    for i, rule_id in enumerate(rule_ids_list):
+        message = red_flags_list[i] if i < len(red_flags_list) else p1_rationale
+        safety_red_flags_structured.append({
+            "rule_id": rule_id,
+            "message": message,
+        })
+
+    # ── STEP 3: Route by Person 1 result ──
     if p1_priority == "EMERGENCY" or not llm_allowed:
         # Hard emergency OR uncertainty/pediatric — LLM path is closed
         if p1_priority == "EMERGENCY":
@@ -101,7 +114,7 @@ def triage_patient(intake: dict, db: Session = Depends(get_db)):
         red_flag = rule_triggered
 
     else:
-        # ── STEP 3: LLM classification (only runs when Person 1 says it is safe) ──
+        # ── STEP 4: LLM classification (only runs when Person 1 says it is safe) ──
         try:
             classification = classify(intake)
             priority   = classification.get("priority", "same-day")
@@ -111,7 +124,7 @@ def triage_patient(intake: dict, db: Session = Depends(get_db)):
             # LLM failure → escalate to same-day, never silently become routine
             print(f"[LLM] classify() error: {exc}")
             priority   = "same-day"
-            rationale  = f"LLM classifier failed: {exc}. Defaulted to same-day for safety."
+            rationale  = "LLM classification unavailable. Safe fallback applied."
             confidence = "low"
 
         source   = "llm"
@@ -122,10 +135,13 @@ def triage_patient(intake: dict, db: Session = Depends(get_db)):
             priority = "same-day"
             rationale += " (Confidence gate: low-confidence routine escalated to same-day.)"
 
-    # ── STEP 4: Doctor Assignment ──
+    # ── STEP 5: Doctor Assignment ──
     assigned_doctor, assignment_reason = assign_doctor(db, intake)
 
-    # ── STEP 5: Persist and return ──
+    # ── STEP 6: Persist and return ──
+    # Serialize safety_red_flags as JSON text for the DB column
+    safety_red_flags_json = json.dumps(safety_red_flags_structured)
+
     # Fields that go into the DB (must match Patient model columns)
     db_record = {
         "patient_id":        patient_id,
@@ -136,6 +152,7 @@ def triage_patient(intake: dict, db: Session = Depends(get_db)):
         "chief_complaint":   intake.get("chief_complaint"),
         "duration":          intake.get("duration"),
         "red_flag":          red_flag,
+        "safety_red_flags":  safety_red_flags_json,
         "relevant_history":  intake.get("history"),
         "assigned_doctor":   assigned_doctor,
         "assignment_reason": assignment_reason,
@@ -143,11 +160,21 @@ def triage_patient(intake: dict, db: Session = Depends(get_db)):
 
     add_patient(db, db_record)
 
-    # Return full response including Person 1 safety metadata (not stored in DB,
-    # but needed by the doctor dashboard for red-flag display and audit)
+    # Return canonical response — this is the contract between Person 3 and the dashboard
     return {
-        **db_record,
-        "safety_red_flags":  red_flags_list,
-        "security_alerts":   security_alerts,
+        "patient_id":        patient_id,
+        "chief_complaint":   intake.get("chief_complaint"),
+        "duration":          intake.get("duration"),
+        "red_flag":          red_flag,
+        "safety_red_flags":  safety_red_flags_structured,
+        "relevant_history":  intake.get("history"),
+        "priority":          priority,
+        "rationale":         rationale,
+        "confidence":        confidence,
+        "source":            source,
+        "llm_allowed":       llm_allowed,
         "p1_priority":       p1_priority,
+        "assigned_doctor":   assigned_doctor,
+        "assignment_reason": assignment_reason,
+        "security_alerts":   security_alerts,
     }
