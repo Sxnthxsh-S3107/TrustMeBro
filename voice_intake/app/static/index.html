@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Intake & NLP — Standalone Module</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <h1 id="app-title">Voice Intake & NLP</h1>
+      <p id="app-subtitle">Person 2 Independent Subsystem • English & தமிழ்</p>
+      <div class="badge-tag" id="app-badge">Datathon Standalone Testing Mode</div>
+    </header>
+
+    <!-- 1. Language Selection Screen -->
+    <div id="language-screen" class="card">
+      <h2 id="lang-title" style="font-size: 1.4rem; margin-bottom: 8px;">Choose your language</h2>
+      <p id="lang-subtitle" style="color: var(--text-muted);">உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்</p>
+      <div class="lang-btn-group">
+        <button id="btn-lang-en" class="btn-lang" onclick="selectLanguage('en')">
+          <span class="flag">🇬🇧</span>
+          <span>English</span>
+        </button>
+        <button id="btn-lang-ta" class="btn-lang" onclick="selectLanguage('ta')">
+          <span class="flag">🇮🇳</span>
+          <span>தமிழ் (Tamil)</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 2. Intake Flow Screen (Hidden by default) -->
+    <div id="intake-screen" class="card hidden">
+      <!-- Session Bar -->
+      <div class="session-bar">
+        <span id="session-info">Session: <strong id="lbl-session-id">-</strong></span>
+        <span id="lang-info">Language: <strong id="lbl-lang">-</strong></span>
+      </div>
+
+      <!-- Current Question Card -->
+      <div class="question-box">
+        <div id="lbl-step-tag" class="question-step">Question 1</div>
+        <div id="lbl-question-text" class="question-text">Loading question...</div>
+      </div>
+
+      <!-- Microphone Recording Area -->
+      <div class="mic-section">
+        <button id="btn-mic" class="btn-mic" onclick="toggleRecording()" title="Click to Speak">
+          🎤
+        </button>
+        <div id="lbl-mic-status" class="mic-status-label">Click microphone to speak</div>
+      </div>
+
+      <!-- Live Transcript Box -->
+      <div id="transcript-box" class="transcript-preview placeholder">
+        Your spoken answer will appear here...
+      </div>
+
+      <!-- Extracted Clinical Entities Badges -->
+      <div id="extracted-panel" class="extracted-panel">
+        <div id="lbl-extracted-title" class="extracted-title">Extracted Clinical Data</div>
+        <div id="badge-grid" class="badge-grid">
+          <div class="data-badge" id="badge-complaint">Complaint: <span id="val-complaint">-</span></div>
+          <div class="data-badge" id="badge-duration">Duration: <span id="val-duration">-</span></div>
+          <div class="data-badge" id="badge-meds">Meds: <span id="val-meds">-</span></div>
+          <div class="data-badge" id="badge-history">History: <span id="val-history">-</span></div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="action-controls">
+        <button id="btn-submit" class="btn-primary" onclick="submitCurrentAnswer()" disabled>
+          Continue
+        </button>
+        <button id="btn-retry" class="btn-secondary" onclick="resetCurrentAnswer()">
+          Retry
+        </button>
+      </div>
+
+      <!-- Fallback manual text & audio file upload -->
+      <div class="text-fallback-toggle">
+        <div style="display: flex; justify-content: center; gap: 16px; flex-wrap: wrap;">
+          <a id="btn-toggle-text" href="#" onclick="toggleManualInput(event)">⌨️ Type answer manually</a>
+          <a id="btn-upload-audio" href="#" onclick="triggerAudioUpload(event)">📁 Upload audio file</a>
+        </div>
+        <input type="file" id="audio-file-input" accept="audio/*,.webm,.wav,.mp3,.m4a,.ogg" style="display: none;" onchange="handleAudioFileUpload(event)" />
+        <div id="manual-input-box" class="fallback-input-group hidden">
+          <input type="text" id="manual-text-input" placeholder="Type answer in English / Tamil / Tanglish..." onkeydown="if(event.key==='Enter') submitManualText()" />
+          <button id="btn-manual-submit" onclick="submitManualText()">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Final JSON Result Screen (Hidden by default) -->
+    <div id="result-screen" class="card hidden">
+      <h2 id="lbl-result-title" style="margin-bottom: 12px; color: #60a5fa;">Intake Completed</h2>
+      <p id="lbl-result-subtitle" style="color: var(--text-muted); margin-bottom: 16px;">
+        Standardized patient encounter JSON conforming to <code>contracts/intake_schema.json</code>.
+      </p>
+
+      <div class="json-display" id="final-json-view"></div>
+
+      <div class="action-controls" style="margin-top: 20px;">
+        <button id="btn-copy-json" class="btn-primary" onclick="copyJsonToClipboard()">
+          📋 Copy JSON
+        </button>
+        <button id="btn-new-session" class="btn-secondary" onclick="startFreshSession()">
+          🔄 New Session
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/mic.js"></script>
+</body>
+</html>
