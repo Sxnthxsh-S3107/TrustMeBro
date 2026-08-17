@@ -1,12 +1,13 @@
 import os
-from sqlalchemy import create_engine, Column, String, Boolean, DateTime
+from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
+from . import env_loader
 from datetime import datetime
 
-load_dotenv()
-
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ruralcare.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ruralcare.db").strip("\"'")
+valid_schemes = ("sqlite://", "postgresql://", "postgres://", "mysql://", "oracle://", "mssql://", "mariadb://")
+if not DATABASE_URL or not DATABASE_URL.startswith(valid_schemes):
+    DATABASE_URL = "sqlite:///./ruralcare.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -23,6 +24,7 @@ class Patient(Base):
     chief_complaint = Column(String)
     duration = Column(String)
     red_flag = Column(Boolean, default=False)
+    safety_red_flags = Column(Text, nullable=True)       # JSON-encoded list from Person 1
     relevant_history = Column(String)
     assigned_doctor = Column(String, nullable=True)
     assignment_reason = Column(String, nullable=True)
