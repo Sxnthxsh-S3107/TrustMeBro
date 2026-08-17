@@ -1,136 +1,17 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-<<<<<<< Updated upstream
-  "title": "IntakeSchema",
-  "description": "Schema for Person 2 Voice Intake & NLP standardized patient encounter data",
   "type": "object",
-  "required": [
-    "session_id",
-    "language",
-    "chief_complaint",
-    "duration",
-    "medications",
-    "history",
-    "follow_up_answers",
-    "raw_transcript"
-  ],
   "properties": {
-    "session_id": {
-      "type": "string",
-      "description": "Unique session identifier for the intake interaction"
-    },
-    "patient_id": {
-      "type": ["string", "null"],
-      "description": "Optional patient identifier if known or provided"
-    },
-    "language": {
-      "type": "string",
-      "enum": ["en", "ta"],
-      "description": "Language code selected by the patient (en: English, ta: Tamil)"
-    },
-    "chief_complaint": {
-      "type": "string",
-      "enum": [
-        "chest pain",
-        "headache",
-        "abdominal pain",
-        "breathing difficulty",
-        "unknown"
-      ],
-      "description": "Canonical normalized chief complaint in English"
-    },
-    "duration": {
-      "type": "string",
-      "description": "Normalized symptom onset duration (e.g. '2 hours', '1 day') or verbatim text if non-standard"
-    },
-    "medications": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "List of normalized medication names or ['none']"
-    },
-    "history": {
-      "type": "string",
-      "description": "Normalized medical history (e.g. 'diabetic', 'hypertension', 'none')"
-    },
+    "patient_id": { "type": ["string", "null"] },
+    "language": { "type": "string", "enum": ["en", "ta"] },
+    "chief_complaint": { "type": "string" },
+    "duration": { "type": "string" },
+    "medications": { "type": "array", "items": { "type": "string" } },
+    "history": { "type": "string" },
     "follow_up_answers": {
       "type": "object",
-      "description": "Map of adaptive clinical follow-up question keys to boolean responses",
-      "additionalProperties": {
-        "type": "boolean"
-      }
+      "additionalProperties": { "type": ["boolean", "string"] }
     },
-    "raw_transcript": {
-      "type": "string",
-      "description": "Verbatim transcript of patient responses in their native spoken language"
-    },
-    "raw_transcripts": {
-      "type": "object",
-      "description": "Per-question verbatim transcripts in patient's native language",
-      "additionalProperties": {
-        "type": "string"
-      }
-    },
-    "status": {
-      "type": "string",
-      "enum": ["in_progress", "completed", "ambiguous", "unknown"],
-      "description": "Intake processing status"
-    }
+    "raw_transcript": { "type": "string" }
   },
-  "additionalProperties": true
-=======
-  "title": "LifeLineIntakeData",
-  "description": "Structured clinical facts payload received by Person 1's Safety Rule Engine",
-  "type": "object",
-  "properties": {
-    "patient_id": { "type": "string" },
-    "age": { "type": ["integer", "null"] },
-    "sex": { "type": ["string", "null"] },
-    "chief_complaint": { "type": ["string", "null"] },
-    "duration": { "type": ["string", "null"] },
-    "severity": { "type": ["string", "null"] },
-    "notes": { "type": ["string", "null"] },
-    "stridor": { "type": ["boolean", "string", "null"] },
-    "airway_swelling": { "type": ["boolean", "string", "null"] },
-    "facial_or_tongue_swelling": { "type": ["boolean", "string", "null"] },
-    "severe_respiratory_distress": { "type": ["boolean", "string", "null"] },
-    "central_cyanosis": { "type": ["boolean", "string", "null"] },
-    "breathing_difficulty": { "type": ["boolean", "string", "null"] },
-    "wheezing": { "type": ["boolean", "string", "null"] },
-    "unconscious": { "type": ["boolean", "string", "null"] },
-    "avpu": { "type": ["string", "null"] },
-    "gcs": { "type": ["number", "null"] },
-    "altered_mental_status": { "type": ["boolean", "string", "null"] },
-    "acute_confusion": { "type": ["boolean", "string", "null"] },
-    "active_convulsion": { "type": ["boolean", "string", "null"] },
-    "actively_seizing": { "type": ["boolean", "string", "null"] },
-    "severe_bleeding": { "type": ["boolean", "string", "null"] },
-    "heavy_bleeding": { "type": ["boolean", "string", "null"] },
-    "uncontrolled_bleeding": { "type": ["boolean", "string", "null"] },
-    "sudden_one_sided_weakness": { "type": ["boolean", "string", "null"] },
-    "facial_weakness": { "type": ["boolean", "string", "null"] },
-    "speech_difficulty": { "type": ["boolean", "string", "null"] },
-    "sudden_vision_change": { "type": ["boolean", "string", "null"] },
-    "chest_pain": { "type": ["boolean", "string", "null"] },
-    "fainting": { "type": ["boolean", "string", "null"] },
-    "sweating": { "type": ["boolean", "string", "null"] },
-    "radiating_pain": { "type": ["boolean", "string", "null"] },
-    "generalized_hives": { "type": ["boolean", "string", "null"] },
-    "major_trauma": { "type": ["boolean", "string", "null"] },
-    "penetrating_injury": { "type": ["boolean", "string", "null"] },
-    "severe_burn": { "type": ["boolean", "string", "null"] },
-    "poisoning": { "type": ["boolean", "string", "null"] },
-    "chemical_exposure": { "type": ["boolean", "string", "null"] },
-    "snakebite": { "type": ["boolean", "string", "null"] },
-    "pregnant": { "type": ["boolean", "string", "null"] },
-    "severe_abdominal_pain": { "type": ["boolean", "string", "null"] },
-    "spo2": { "type": ["number", "null"] },
-    "heart_rate": { "type": ["number", "null"] },
-    "respiratory_rate": { "type": ["number", "null"] },
-    "systolic_bp": { "type": ["number", "null"] },
-    "diastolic_bp": { "type": ["number", "null"] },
-    "temperature": { "type": ["number", "null"] }
-  }
->>>>>>> Stashed changes
+  "required": ["language", "chief_complaint", "duration", "history"]
 }
