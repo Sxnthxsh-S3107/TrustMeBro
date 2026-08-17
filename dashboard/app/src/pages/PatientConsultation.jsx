@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Mic, Check, Upload, Type } from "lucide-react";
+import { Mic, Check, Upload, Volume2 } from "lucide-react";
 import {
   startIntake,
   submitIntakeAnswerText,
@@ -8,59 +8,65 @@ import {
   getIntakeResult,
   submitToDecisionEngine,
 } from "../services/api";
+import { speak, stop as stopSpeech, hasTamilVoice } from "../services/ttsService";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// ROOT CAUSE OF BUGS:
+// STATE MACHINE STATES:
 //
-// BUG #1 ("Failed to submit answer") was caused downstream of BUG #2.
-//        When /transcribe fails, no transcript is set, so submitIntakeAnswerText
-//        is called with an empty string, causing a 400 from Person 2's backend.
-//
-// BUG #2 ("Error connecting to transcription service") was a React stale-closure
-//        bug. The MediaRecorder.onstop callback was defined once and captured the
-//        `transcript` state value at that moment (always ""). Even after Web
-//        Speech set the transcript in state, the onstop closure still saw "".
-//        So it ALWAYS fell through to the Whisper /transcribe path, which
-//        fails when no OPENAI_API_KEY is configured (MockASRService).
-//
-// FIX: Use a mutable ref (transcriptRef) that is kept in sync with the transcript
-//      state. The onstop closure reads transcriptRef.current (always current value)
-//      instead of the stale state variable. This exactly mirrors how Person 2's
-//      own mic.js handles it using a plain JS variable (capturedSpeechViaWebSpeech).
+// IDLE                - Language selection screen.
+// ASKING              - Fetching the question from Person 2 API.
+// SPEAKING            - Browser Text-to-Speech is actively reading the question.
+// WAITING_FOR_PATIENT - Speaking finished. Patient's turn to answer (speak/type).
+// RECORDING           - Active patient voice recording.
+// PROCESSING          - Transcribing (Whisper fallback) or submitting answer.
+// COMPLETED           - Session complete, redirected.
+// ERROR               - Connection/backend failure.
 // ──────────────────────────────────────────────────────────────────────────────
 
 export default function PatientConsultation() {
+  const [state, setState] = useState("IDLE"); // IDLE | ASKING | SPEAKING | WAITING_FOR_PATIENT | RECORDING | PROCESSING | COMPLETED | ERROR
   const [language, setLanguage] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [transcript, setTranscript] = useState("");
-  const [recordingState, setRecordingState] = useState("idle"); // idle | recording | transcribing
   const [extractedData, setExtractedData] = useState({});
   const [showManual, setShowManual] = useState(false);
   const [manualText, setManualText] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // TTS Fallback States
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [tamilVoiceError, setTamilVoiceError] = useState(false);
+
   const navigate = useNavigate();
 
-  // Refs — these escape React's stale closure problem inside async callbacks
-  const transcriptRef = useRef("");         // always current transcript value
-  const languageRef = useRef("en");         // always current language
-  const sessionIdRef = useRef(null);        // always current sessionId
+  // Refs — escape stale closures inside callbacks
+  const transcriptRef = useRef("");
+  const languageRef = useRef("en");
+  const sessionIdRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const speechRecognizerRef = useRef(null);
   const recognizerLangRef = useRef("en-US");
-  const isRecordingRef = useRef(false);     // mirrors recordingState for closure safety
+  const isRecordingRef = useRef(false);
+  const stateRef = useRef("IDLE");
 
-  // Keep refs in sync with state
+  // Keep stateRef synced with state for async callback checks
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
   const setTranscriptSync = (val) => {
     transcriptRef.current = val;
     setTranscript(val);
   };
 
-  // Initialise SpeechRecognition once on mount (not on every render)
+  // Initialise Web SpeechRecognition on mount
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (!SR) {
+      console.warn("[WebSpeech] Not supported in this browser.");
+      return;
+    }
 
     const recognizer = new SR();
     recognizer.interimResults = true;
@@ -84,7 +90,7 @@ export default function PatientConsultation() {
     };
 
     recognizer.onend = () => {
-      // Web Speech ended (either user stopped or browser auto-stopped)
+      // If the recognizer stopped but state is still RECORDING, finalize the recording
       if (isRecordingRef.current) {
         stopRecording();
       }
@@ -92,34 +98,77 @@ export default function PatientConsultation() {
 
     recognizer.onerror = (event) => {
       console.warn("[WebSpeech] error:", event.error);
-      // Not a fatal error — MediaRecorder is still running and will try Whisper if needed
     };
 
     speechRecognizerRef.current = recognizer;
-  }, []); // only once
+
+    // Cleanup speech synthesis on unmount
+    return () => {
+      stopSpeech();
+    };
+  }, []);
+
+  /**
+   * Triggers the browser text-to-speech for the question.
+   */
+  const triggerTTS = (text, lang) => {
+    // Clear previous fallbacks
+    setAutoplayBlocked(false);
+    setTamilVoiceError(false);
+
+    setState("SPEAKING");
+
+    speak(text, lang, {
+      onStart: () => {
+        setState("SPEAKING");
+      },
+      onEnd: () => {
+        setState("WAITING_FOR_PATIENT");
+      },
+      onError: (err) => {
+        console.warn("[ttsService] Speak error/warning:", err.message || err);
+        if (err.message === "tamil_voice_unavailable") {
+          setTamilVoiceError(true);
+        } else {
+          setAutoplayBlocked(true);
+        }
+        setState("WAITING_FOR_PATIENT");
+      },
+    });
+  };
 
   const handleStart = async (selectedLang) => {
+    setState("ASKING");
     setLanguage(selectedLang);
     languageRef.current = selectedLang;
     recognizerLangRef.current = selectedLang === "ta" ? "ta-IN" : "en-US";
+    
     try {
       const data = await startIntake(selectedLang);
       setSessionId(data.session_id);
       sessionIdRef.current = data.session_id;
       setCurrentQuestion(data.first_question);
+      
+      // Auto-speak the first question
+      triggerTTS(data.first_question.question_text, selectedLang);
     } catch (err) {
       console.error("[intake/start] failed:", err);
+      setState("ERROR");
       alert("Failed to connect to voice intake backend. Please ensure Person 2 is running on port 5000.");
-      setLanguage(null);
     }
   };
 
   const startRecording = async () => {
-    setRecordingState("recording");
+    if (stateRef.current !== "WAITING_FOR_PATIENT") return;
+    
+    // Cancel any active speech if recording starts
+    stopSpeech();
+
+    setState("RECORDING");
     isRecordingRef.current = true;
     setTranscriptSync("");
 
-    // ── TRACK 1: Web Speech API (live, instant, preferred) ──
+    // 1. Web Speech Recognition (live track)
     if (speechRecognizerRef.current) {
       try {
         speechRecognizerRef.current.lang = recognizerLangRef.current;
@@ -129,7 +178,7 @@ export default function PatientConsultation() {
       }
     }
 
-    // ── TRACK 2: MediaRecorder (audio blob for Whisper fallback ONLY) ──
+    // 2. MediaRecorder (Whisper fallback)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
@@ -142,25 +191,26 @@ export default function PatientConsultation() {
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
 
-        // ── KEY FIX: Read from ref, not from stale state closure ──
-        // This mirrors the `capturedSpeechViaWebSpeech` flag in Person 2's mic.js
+        // Check if Web Speech already got a valid transcript
         if (transcriptRef.current.trim().length > 0) {
-          // Web Speech already captured a good transcript — DO NOT call Whisper
-          setRecordingState("idle");
+          setState("WAITING_FOR_PATIENT");
           return;
         }
 
-        // Web Speech produced nothing — fall back to Whisper via Person 2's /transcribe
+        // Web Speech failed/empty -> Fallback to Whisper
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         if (audioBlob.size < 500) {
-          setRecordingState("idle");
-          alert("No speech detected. Please speak closer to the microphone.");
+          setState("WAITING_FOR_PATIENT");
+          alert(
+            languageRef.current === "ta"
+              ? "குரல் கண்டறியப்படவில்லை. மீண்டும் மைக் அழுத்திப் பேசவும்."
+              : "No speech detected. Please speak closer to the microphone."
+          );
           return;
         }
 
-        setRecordingState("transcribing");
+        setState("PROCESSING");
         try {
-          // Use Person 2's /transcribe endpoint — it handles Whisper backend, never expose API key to browser
           const resp = await transcribeAudio(
             sessionIdRef.current,
             languageRef.current,
@@ -169,7 +219,6 @@ export default function PatientConsultation() {
           if (resp && resp.success && resp.transcript) {
             setTranscriptSync(resp.transcript);
           } else {
-            console.warn("[transcribe] no transcript in response:", resp);
             alert(
               languageRef.current === "ta"
                 ? "குரல் கண்டறியப்படவில்லை. மீண்டும் முயற்சிக்கவும் அல்லது கீழே தட்டச்சு செய்யவும்."
@@ -177,7 +226,6 @@ export default function PatientConsultation() {
             );
           }
         } catch (e) {
-          // Log the actual error from Person 2's backend for debugging
           console.error("[/transcribe] error:", e?.response?.data || e.message);
           alert(
             languageRef.current === "ta"
@@ -185,16 +233,16 @@ export default function PatientConsultation() {
               : "Transcription service error. Please use the text input below to continue."
           );
         } finally {
-          setRecordingState("idle");
+          setState("WAITING_FOR_PATIENT");
         }
       };
 
       mediaRecorderRef.current = mediaRecorder;
       mediaRecorder.start();
     } catch (err) {
-      console.error("[MediaRecorder] getUserMedia failed:", err);
+      console.error("[MediaRecorder] failed:", err);
       isRecordingRef.current = false;
-      setRecordingState("idle");
+      setState("WAITING_FOR_PATIENT");
       alert("Microphone not available. Please use the text input below.");
     }
   };
@@ -207,13 +255,12 @@ export default function PatientConsultation() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
-    // Note: do NOT set recordingState here — onstop will do it after processing
   };
 
   const toggleRecording = () => {
-    if (recordingState === "recording") {
+    if (state === "RECORDING") {
       stopRecording();
-    } else {
+    } else if (state === "WAITING_FOR_PATIENT") {
       startRecording();
     }
   };
@@ -221,7 +268,10 @@ export default function PatientConsultation() {
   const handleAudioUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setRecordingState("transcribing");
+    
+    stopSpeech();
+    setState("PROCESSING");
+    
     try {
       const resp = await transcribeAudio(sessionIdRef.current, languageRef.current, file);
       if (resp?.success && resp.transcript) {
@@ -233,7 +283,7 @@ export default function PatientConsultation() {
       console.error("[/transcribe upload] error:", err?.response?.data || err.message);
       alert("Could not transcribe the uploaded file.");
     } finally {
-      setRecordingState("idle");
+      setState("WAITING_FOR_PATIENT");
     }
     e.target.value = null;
   };
@@ -250,9 +300,10 @@ export default function PatientConsultation() {
     const currentTranscript = transcriptRef.current.trim();
     if (!currentTranscript) return;
 
-    setIsSubmitting(true);
+    stopSpeech();
+    setState("PROCESSING");
+    
     try {
-      // POST /intake/answer — Person 2 expects JSON: {session_id, text}
       const data = await submitIntakeAnswerText(sessionIdRef.current, currentTranscript);
 
       if (data.extracted) {
@@ -260,36 +311,38 @@ export default function PatientConsultation() {
       }
 
       if (data.status === "completed" || !data.next_question) {
-        // Session complete — fetch canonical JSON from Person 2 and send to Person 3
+        setState("COMPLETED");
         const finalJson = await getIntakeResult(sessionIdRef.current);
-        console.log("[Person 2 result]", finalJson);
         await submitToDecisionEngine(finalJson);
         navigate(`/patient/status/${sessionIdRef.current}`);
       } else {
-        // Show next adaptive question
         setCurrentQuestion(data.next_question);
         setTranscriptSync("");
+        // Auto-play the next adaptive question
+        triggerTTS(data.next_question.question_text, languageRef.current);
       }
     } catch (err) {
-      // Log the actual HTTP error from Person 2 or Person 3
-      console.error("[intake/answer or /triage] error:", err?.response?.status, err?.response?.data || err.message);
-      const msg = err?.response?.data?.error || err?.response?.data?.message || err.message;
-      alert(`Failed to submit: ${msg || "Please check the backend is running."}`);
-    } finally {
-      setIsSubmitting(false);
+      console.error("[intake/answer or triage] error:", err?.response?.data || err.message);
+      alert("Failed to submit. Please ensure all backends are running.");
+      setState("WAITING_FOR_PATIENT");
     }
+  };
+
+  const handleReplay = () => {
+    if (!currentQuestion) return;
+    triggerTTS(currentQuestion.question_text, languageRef.current);
   };
 
   // ── UI STRINGS ──
   const isTa = language === "ta";
   const t = {
     title: isTa ? "குரல் பதிவு" : "Voice Intake",
-    micIdle: isTa ? "பேச மைக் பொத்தானை அழுத்தவும்" : "Tap and speak naturally",
+    micIdle: isTa ? "🎙️ உங்கள் முறை (பேச அழுத்தவும்)" : "🎙️ Your turn (Tap to speak)",
     micRecording: isTa ? "🔴 கேட்கிறது... (நிறுத்த அழுத்தவும்)" : "🔴 Listening... (Tap to stop)",
-    micTranscribing: isTa ? "செயலாக்குகிறது..." : "Processing...",
+    micTranscribing: isTa ? "⏳ செயலாக்குகிறது..." : "⏳ Processing...",
     placeholder: isTa ? "உங்கள் வார்த்தைகள் இங்கே தோன்றும்..." : "Your spoken answer will appear here...",
     continueBtn: isTa ? "அடுத்து செல்லவும்" : "Continue",
-    retryBtn: isTa ? "மீண்டும் முயற்சிக்கவும்" : "Retry",
+    retryBtn: isTa ? "மீண்டும்" : "Clear",
     manualBtn: isTa ? "⌨️ தட்டச்சு செய்யவும்" : "⌨️ Type instead",
     uploadBtn: isTa ? "📁 கோப்பை பதிவேற்ற" : "📁 Upload Audio",
     extractedTitle: isTa ? "கண்டறியப்பட்ட மருத்துவத் தகவல்கள்" : "Extracted Clinical Data",
@@ -298,19 +351,19 @@ export default function PatientConsultation() {
     history: isTa ? "வரலாறு" : "History",
     question: isTa ? "கேள்வி" : "Question",
     followUp: isTa ? "கூடுதல் கேள்வி" : "Follow-up",
+    replay: isTa ? "🔊 கேள்வியை மீண்டும் கேட்க" : "🔊 Replay Question",
+    speaking: isTa ? "🔊 கேள்வி கேட்கப்படுகிறது..." : "🔊 AI is speaking...",
+    autoplayBlocked: isTa ? "🔊 ஆடியோ தடுக்கப்பட்டுள்ளது. கேள்வியைக் கேட்க இங்கே தட்டவும்." : "🔊 Autoplay is blocked. Tap here to hear the question.",
+    tamilVoiceMissing: isTa ? "தமிழ் குரல் இந்த சாதனத்தில் கிடைக்கவில்லை. கேள்வியை திரையில் படிக்கவும்." : "Tamil voice is not available on this device. Please read the question.",
   };
 
-  const micLabel = recordingState === "recording"
-    ? t.micRecording
-    : recordingState === "transcribing"
-      ? t.micTranscribing
-      : t.micIdle;
+  const showLangSelection = state === "IDLE" || !language;
 
   // ── LANGUAGE SELECTION SCREEN ──
-  if (!language) {
+  if (showLangSelection) {
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: "2rem" }}>
-        <h1 style={{ marginBottom: "0.5rem", fontSize: "2rem" }}>Choose your language</h1>
+        <h1 style={{ marginBottom: "0.5rem", fontSize: "2.2rem", fontWeight: "700" }}>Choose your language</h1>
         <p style={{ color: "#64748b", marginBottom: "3rem", fontSize: "1.2rem" }}>உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்</p>
         <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", justifyContent: "center" }}>
           <button
@@ -331,13 +384,19 @@ export default function PatientConsultation() {
   }
 
   // ── INTAKE FLOW SCREEN ──
+  const isSpeaking = state === "SPEAKING";
+  const isProcessing = state === "PROCESSING";
+  const isAsking = state === "ASKING";
+  const isWaiting = state === "WAITING_FOR_PATIENT";
+  const isRecording = state === "RECORDING";
+
   return (
     <div style={{ maxWidth: "720px", margin: "0 auto", padding: "1.5rem 1rem 5rem 1rem" }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem", paddingBottom: "1rem", borderBottom: "2px solid #e2e8f0" }}>
         <h2 style={{ margin: 0 }}>{t.title}</h2>
         <span style={{ fontSize: "0.8rem", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "4px 10px", color: "#64748b" }}>
-          {sessionId?.substring(0, 8)}…
+          Session: {sessionId?.substring(0, 8)}…
         </span>
       </div>
 
@@ -347,32 +406,81 @@ export default function PatientConsultation() {
           <div style={{ color: "#3b82f6", fontWeight: "700", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "1rem" }}>
             {currentQuestion.is_adaptive ? t.followUp : t.question}
           </div>
-          <h2 style={{ fontSize: "1.6rem", fontWeight: "600", color: "#0f172a", marginBottom: "2.5rem", lineHeight: 1.4 }}>
+          
+          <h2 style={{ fontSize: "1.7rem", fontWeight: "600", color: "#0f172a", marginBottom: "1.5rem", lineHeight: 1.4 }}>
             {currentQuestion.question_text}
           </h2>
 
-          {/* Microphone Button */}
-          <div
-            onClick={recordingState === "transcribing" ? undefined : toggleRecording}
-            style={{
-              width: "130px", height: "130px", borderRadius: "50%", margin: "0 auto",
-              background: recordingState === "recording" ? "#ef4444" : "#3b82f6",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              cursor: recordingState === "transcribing" ? "default" : "pointer",
-              boxShadow: recordingState === "recording"
-                ? "0 0 0 8px rgba(239,68,68,0.2), 0 4px 16px rgba(239,68,68,0.3)"
-                : "0 4px 16px rgba(59,130,246,0.3)",
-              transition: "all 0.2s ease",
-            }}
-          >
-            <svg width="60" height="60" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
-              <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm0 14a6 6 0 0 0 6-6H6a6 6 0 0 0 6 6zm-1 5v-2.06A8.001 8.001 0 0 1 4.06 11H2a10 10 0 0 0 9 9.95V21h-2v2h6v-2h-2v-.05A10 10 0 0 0 22 11h-2.06A8.001 8.001 0 0 1 13 17.94V20h-2z"/>
-            </svg>
+          {/* Autoplay / Tamil Voice missing Warning Banners */}
+          {autoplayBlocked && (
+            <div 
+              onClick={handleReplay}
+              style={{ padding: "0.75rem 1rem", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "8px", color: "#b45309", marginBottom: "1.5rem", fontSize: "0.95rem", cursor: "pointer", fontWeight: "600" }}
+            >
+              {t.autoplayBlocked}
+            </div>
+          )}
+
+          {tamilVoiceError && (
+            <div style={{ padding: "0.75rem 1rem", background: "#fef2f2", border: "1px solid #fee2e2", borderRadius: "8px", color: "#b91c1c", marginBottom: "1.5rem", fontSize: "0.95rem" }}>
+              {t.tamilVoiceMissing}
+            </div>
+          )}
+
+          {/* Status Label (AI is speaking vs Patient's turn) */}
+          <div style={{ marginBottom: "2rem", minHeight: "2rem" }}>
+            {isSpeaking ? (
+              <span style={{ fontSize: "1.1rem", fontWeight: "700", color: "#3b82f6", background: "#eff6ff", padding: "6px 16px", borderRadius: "20px", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                <Volume2 size={18} className="speaking-mic-icon" /> {t.speaking}
+              </span>
+            ) : isWaiting ? (
+              <span style={{ fontSize: "1.1rem", fontWeight: "600", color: "#059669", background: "#ecfdf5", padding: "6px 16px", borderRadius: "20px" }}>
+                {t.micIdle}
+              </span>
+            ) : isRecording ? (
+              <span style={{ fontSize: "1.1rem", fontWeight: "700", color: "#ef4444", background: "#fef2f2", padding: "6px 16px", borderRadius: "20px", animation: "pulse 1.5s infinite" }}>
+                {t.micRecording}
+              </span>
+            ) : (
+              <span style={{ fontSize: "1.1rem", color: "#64748b" }}>
+                {t.micTranscribing}
+              </span>
+            )}
           </div>
 
-          <p style={{ marginTop: "1.2rem", fontSize: "1rem", color: recordingState === "recording" ? "#ef4444" : "#64748b", fontWeight: recordingState === "recording" ? "700" : "400", minHeight: "1.5rem" }}>
-            {micLabel}
-          </p>
+          {/* Large Microphone Button */}
+          <button
+            onClick={toggleRecording}
+            disabled={isSpeaking || isProcessing || isAsking}
+            style={{
+              width: "130px", height: "130px", borderRadius: "50%", margin: "0 auto",
+              background: isRecording ? "#ef4444" : (isSpeaking || isProcessing || isAsking) ? "#cbd5e1" : "#3b82f6",
+              display: "flex", alignItems: "center", justifyContent: "center", border: "none",
+              cursor: (isSpeaking || isProcessing || isAsking) ? "default" : "pointer",
+              boxShadow: isRecording
+                ? "0 0 0 8px rgba(239,68,68,0.2), 0 4px 16px rgba(239,68,68,0.3)"
+                : (isSpeaking || isProcessing || isAsking) ? "none" : "0 4px 16px rgba(59,130,246,0.3)",
+              transition: "all 0.2s ease",
+              outline: "none"
+            }}
+          >
+            <Mic size={54} color="white" />
+          </button>
+
+          {/* Replay Question Button */}
+          {(isSpeaking || isWaiting) && (
+            <button
+              onClick={handleReplay}
+              style={{
+                marginTop: "1.5rem", padding: "6px 16px", borderRadius: "8px",
+                border: "1.5px solid #3b82f6", background: "white", color: "#3b82f6",
+                cursor: "pointer", fontSize: "0.95rem", fontWeight: "600",
+                display: "inline-flex", alignItems: "center", gap: "6px"
+              }}
+            >
+              {t.replay}
+            </button>
+          )}
 
           {/* Transcript Display */}
           <div style={{
@@ -385,8 +493,8 @@ export default function PatientConsultation() {
             fontStyle: transcript ? "italic" : "normal",
             transition: "border-color 0.2s",
           }}>
-            {recordingState === "transcribing"
-              ? "⏳ " + t.micTranscribing
+            {isProcessing
+              ? t.micTranscribing
               : transcript
                 ? `"${transcript}"`
                 : t.placeholder}
@@ -396,35 +504,42 @@ export default function PatientConsultation() {
           <div style={{ display: "flex", justifyContent: "center", gap: "1rem", marginBottom: "1.5rem" }}>
             <button
               onClick={() => setTranscriptSync("")}
-              disabled={!transcript || isSubmitting}
-              style={{ padding: "0.75rem 1.5rem", borderRadius: "8px", border: "1.5px solid #e2e8f0", background: "white", cursor: transcript ? "pointer" : "not-allowed", color: "#475569", opacity: transcript ? 1 : 0.5, fontWeight: "500", fontSize: "1rem" }}
+              disabled={!transcript || isProcessing || isSpeaking}
+              style={{ padding: "0.75rem 1.5rem", borderRadius: "8px", border: "1.5px solid #e2e8f0", background: "white", cursor: (transcript && !isProcessing && !isSpeaking) ? "pointer" : "not-allowed", color: "#475569", opacity: (transcript && !isProcessing && !isSpeaking) ? 1 : 0.5, fontWeight: "500", fontSize: "1rem" }}
             >
               {t.retryBtn}
             </button>
             <button
               onClick={handleAnswerSubmit}
-              disabled={!transcript || isSubmitting || recordingState !== "idle"}
-              style={{ padding: "0.75rem 2rem", borderRadius: "8px", border: "none", background: transcript && !isSubmitting && recordingState === "idle" ? "#3b82f6" : "#93c5fd", color: "white", cursor: transcript && !isSubmitting && recordingState === "idle" ? "pointer" : "not-allowed", fontWeight: "700", fontSize: "1rem", display: "flex", alignItems: "center", gap: "8px" }}
+              disabled={!transcript || isProcessing || isSpeaking || isRecording || isAsking}
+              style={{ padding: "0.75rem 2rem", borderRadius: "8px", border: "none", background: (transcript && !isProcessing && !isSpeaking && !isRecording && !isAsking) ? "#3b82f6" : "#93c5fd", color: "white", cursor: (transcript && !isProcessing && !isSpeaking && !isRecording && !isAsking) ? "pointer" : "not-allowed", fontWeight: "700", fontSize: "1rem" }}
             >
-              {isSubmitting ? "⏳ " + t.micTranscribing : t.continueBtn + " ✓"}
+              {isProcessing ? t.micTranscribing : t.continueBtn + " ✓"}
             </button>
           </div>
 
-          {/* Fallback Options */}
+          {/* Fallback Option Toggles */}
           <div style={{ display: "flex", justifyContent: "center", gap: "2rem", marginTop: "1rem" }}>
             <button
-              onClick={() => setShowManual((v) => !v)}
-              style={{ background: "none", border: "none", color: "#3b82f6", cursor: "pointer", fontSize: "0.95rem", fontWeight: "500", padding: "4px" }}
+              onClick={() => !isSpeaking && !isProcessing && !isRecording && setShowManual((v) => !v)}
+              disabled={isSpeaking || isProcessing || isRecording}
+              style={{ background: "none", border: "none", color: (isSpeaking || isProcessing || isRecording) ? "#cbd5e1" : "#3b82f6", cursor: (isSpeaking || isProcessing || isRecording) ? "default" : "pointer", fontSize: "0.95rem", fontWeight: "500", padding: "4px" }}
             >
               ⌨️ {t.manualBtn}
             </button>
-            <label style={{ color: "#3b82f6", cursor: "pointer", fontSize: "0.95rem", fontWeight: "500" }}>
-              <input type="file" accept="audio/*,.webm,.wav,.mp3,.m4a,.ogg" style={{ display: "none" }} onChange={handleAudioUpload} />
+            <label style={{ color: (isSpeaking || isProcessing || isRecording) ? "#cbd5e1" : "#3b82f6", cursor: (isSpeaking || isProcessing || isRecording) ? "default" : "pointer", fontSize: "0.95rem", fontWeight: "500" }}>
+              <input
+                type="file"
+                accept="audio/*,.webm,.wav,.mp3,.m4a,.ogg"
+                style={{ display: "none" }}
+                disabled={isSpeaking || isProcessing || isRecording}
+                onChange={handleAudioUpload}
+              />
               📁 {t.uploadBtn}
             </label>
           </div>
 
-          {showManual && (
+          {showManual && !isSpeaking && !isProcessing && !isRecording && (
             <div style={{ display: "flex", gap: "0.75rem", marginTop: "1rem", maxWidth: "440px", margin: "1rem auto 0 auto" }}>
               <input
                 type="text"
