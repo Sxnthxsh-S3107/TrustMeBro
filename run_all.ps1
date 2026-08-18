@@ -16,18 +16,19 @@ Write-Host "=== RuralCare / LifeLine — Starting All Services ===" -ForegroundC
 Write-Host "Repository root: $repoRoot" -ForegroundColor Gray
 
 Write-Host "`n[1/3] Starting Person 2: Voice Intake API (Port 5000)..." -ForegroundColor Green
-Start-Process -NoNewWindow -FilePath "python" -ArgumentList "-m", "app.main" -WorkingDirectory "$repoRoot\voice_intake"
+Start-Process -FilePath "python" -ArgumentList "-m", "voice_intake.app.main" -WorkingDirectory $repoRoot
 
 Start-Sleep 2
 
 Write-Host "[2/3] Starting Person 3: Decision Engine API (Port 8000)..." -ForegroundColor Green
 # Must run from repo root so rules_engine is on the Python path
-Start-Process -NoNewWindow -FilePath "python" -ArgumentList "-m", "uvicorn", "decision_engine.app.main:app", "--host", "127.0.0.1", "--port", "8000" -WorkingDirectory $repoRoot
+Start-Process -FilePath "python" -ArgumentList "-m", "uvicorn", "decision_engine.app.main:app", "--host", "127.0.0.1", "--port", "8000" -WorkingDirectory $repoRoot
 
-Start-Sleep 3
+Start-Sleep 2
 
 Write-Host "[3/3] Starting Person 4: React Dashboard (Port 5173)..." -ForegroundColor Green
-Start-Process -NoNewWindow -FilePath "cmd.exe" -ArgumentList "/c", "npm run dev" -WorkingDirectory "$repoRoot\dashboard\app"
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run dev" -WorkingDirectory "$repoRoot\dashboard\app"
+
 
 Write-Host "`n=== All services started! ===" -ForegroundColor Cyan
 Write-Host "Patient interface : http://localhost:5173" -ForegroundColor Yellow

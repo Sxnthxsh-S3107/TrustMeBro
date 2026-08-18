@@ -45,9 +45,16 @@ export default function PatientConsultation() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const speechRecognizerRef = useRef(null);
-  const recognizerLangRef = useRef("en-US");
+  const recognizerLangRef = useRef("en-IN");
   const isRecordingRef = useRef(false);
   const stateRef = useRef("IDLE");
+
+  // WebSpeech coordination refs to prevent race conditions
+  const webSpeechHasResultRef = useRef(false);
+  const webSpeechActiveRef = useRef(false);
+  const whisperFallbackTriggeredRef = useRef(false);
+  const audioBlobRef = useRef(null);
+  const triggerWhisperFallbackRef = useRef(null);
 
   // Keep stateRef synced with state for async callback checks
   useEffect(() => {
@@ -58,6 +65,52 @@ export default function PatientConsultation() {
     transcriptRef.current = val;
     setTranscript(val);
   };
+
+  const triggerWhisperFallback = async () => {
+    if (whisperFallbackTriggeredRef.current) return;
+    whisperFallbackTriggeredRef.current = true;
+
+    const audioBlob = audioBlobRef.current;
+    if (!audioBlob || audioBlob.size < 500) {
+      setState("WAITING_FOR_PATIENT");
+      alert(
+        languageRef.current === "ta"
+          ? "குரல் கண்டறியப்படவில்லை. மீண்டும் மைக் அழுத்திப் பேசவும்."
+          : "No speech detected. Please speak closer to the microphone."
+      );
+      return;
+    }
+
+    setState("PROCESSING");
+    try {
+      const resp = await transcribeAudio(
+        sessionIdRef.current,
+        languageRef.current,
+        audioBlob
+      );
+      if (resp && resp.success && resp.transcript) {
+        setTranscriptSync(resp.transcript);
+      } else {
+        alert(
+          languageRef.current === "ta"
+            ? "குரல் கண்டறியப்படவில்லை. மீண்டும் முயற்சிக்கவும் அல்லது கீழே தட்டச்சு செய்யவும்."
+            : "Speech not recognized. Please try again or use the text fallback."
+        );
+      }
+    } catch (e) {
+      console.error("[/transcribe] error:", e?.response?.data || e.message);
+      alert(
+        languageRef.current === "ta"
+          ? "குரல் சேவையுடன் இணைக்க முடியவில்லை. தட்டச்சு மூலம் தொடரவும்."
+          : "Transcription service error. Please use the text input below to continue."
+      );
+    } finally {
+      setState("WAITING_FOR_PATIENT");
+    }
+  };
+
+  // Sync the helper ref to avoid stale closures in useEffect
+  triggerWhisperFallbackRef.current = triggerWhisperFallback;
 
   // Initialise Web SpeechRecognition on mount
   useEffect(() => {
@@ -72,31 +125,122 @@ export default function PatientConsultation() {
     recognizer.continuous = false;
     recognizer.maxAlternatives = 1;
 
+    recognizer.onstart = () => {
+      console.log("[WebSpeech] Listening started");
+    };
+
+    recognizer.onaudiostart = () => {
+      console.log("[WebSpeech] Audio acquisition started");
+    };
+
+    recognizer.onsoundstart = () => {
+      console.log("[WebSpeech] Sound detection started");
+    };
+
+    recognizer.onspeechstart = () => {
+      console.log("[WebSpeech] Speech detection started");
+    };
+
+    recognizer.onspeechend = () => {
+      console.log("[WebSpeech] Speech ended");
+    };
+
+    recognizer.onsoundend = () => {
+      console.log("[WebSpeech] Sound ended");
+    };
+
+    recognizer.onaudioend = () => {
+      console.log("[WebSpeech] Audio acquisition ended");
+    };
+
     recognizer.onresult = (event) => {
-      let finalTrans = "";
-      let interimTrans = "";
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
+      let finalTranscript = "";
+      let interimTranscript = "";
+      for (let i = 0; i < event.results.length; ++i) {
+        const transcriptSegment = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTrans += event.results[i][0].transcript;
+          finalTranscript += transcriptSegment;
         } else {
-          interimTrans += event.results[i][0].transcript;
+          interimTranscript += transcriptSegment;
         }
       }
-      const liveText = (finalTrans || interimTrans).trim();
-      if (liveText) {
-        setTranscriptSync(liveText);
+      const combined = (finalTranscript + interimTranscript).trim();
+      if (combined) {
+        setTranscriptSync(combined);
+      }
+      if (finalTranscript.trim()) {
+        webSpeechHasResultRef.current = true;
       }
     };
 
     recognizer.onend = () => {
-      // If the recognizer stopped but state is still RECORDING, finalize the recording
+      console.log("[WebSpeech] Stopped. HasResult:", webSpeechHasResultRef.current);
+      webSpeechActiveRef.current = false;
+      
+      // If the recognizer stopped automatically while we are still recording (silence timeout)
       if (isRecordingRef.current) {
         stopRecording();
+      }
+
+      if (webSpeechHasResultRef.current) {
+        setState("WAITING_FOR_PATIENT");
+      } else {
+        // No result from Web Speech, fall back to Whisper once MediaRecorder finishes
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "inactive") {
+          triggerWhisperFallbackRef.current && triggerWhisperFallbackRef.current();
+        }
       }
     };
 
     recognizer.onerror = (event) => {
       console.warn("[WebSpeech] error:", event.error);
+      
+      let userMessage = "";
+      switch (event.error) {
+        case "not-allowed":
+          userMessage = languageRef.current === "ta"
+            ? "ஒலிவாங்கி அனுமதி தேவை. தயவுசெய்து ஒலிவாங்கி அணுகலை அனுமதிக்கவும்."
+            : "Microphone permission is required. Please allow microphone access.";
+          break;
+        case "service-not-allowed":
+          userMessage = languageRef.current === "ta"
+            ? "குரல் சேவை அனுமதிக்கப்படவில்லை. தட்டச்சு மூலம் தொடரவும்."
+            : "Speech recognition service is not allowed. Please type instead.";
+          break;
+        case "no-speech":
+          userMessage = languageRef.current === "ta"
+            ? "குரல் கண்டறியப்படவில்லை. மீண்டும் மைக் அழுத்திப் பேசவும்."
+            : "No speech detected. Please try again.";
+          break;
+        case "audio-capture":
+          userMessage = languageRef.current === "ta"
+            ? "ஒலிவாங்கி வன்பொருள் பிழை. மீண்டும் முயற்சிக்கவும்."
+            : "Audio capture failed. Please ensure your microphone is connected.";
+          break;
+        case "network":
+          userMessage = languageRef.current === "ta"
+            ? "இணைய இணைப்பு பிழை. தட்டச்சு மூலம் தொடரவும்."
+            : "Voice service is temporarily unavailable due to a network error. You can try again or type.";
+          break;
+        case "aborted":
+          // Ignore manual stops
+          break;
+        case "language-not-supported":
+          if (recognizerLangRef.current === "en-IN") {
+            recognizerLangRef.current = "en-US";
+          } else if (recognizerLangRef.current === "en-US") {
+            recognizerLangRef.current = "en-GB";
+          }
+          break;
+        default:
+          userMessage = languageRef.current === "ta"
+            ? "குரல் அங்கீகாரம் தற்காலிகமாக தோல்வியடைந்தது. தட்டச்சு மூலம் தொடரவும்."
+            : "Voice recognition temporarily failed. You can try again or use text.";
+      }
+      
+      if (userMessage) {
+        alert(userMessage);
+      }
     };
 
     speechRecognizerRef.current = recognizer;
@@ -143,7 +287,7 @@ export default function PatientConsultation() {
     setState("ASKING");
     setLanguage(selectedLang);
     languageRef.current = selectedLang;
-    recognizerLangRef.current = selectedLang === "ta" ? "ta-IN" : "en-US";
+    recognizerLangRef.current = selectedLang === "ta" ? "ta-IN" : "en-IN";
     
     try {
       const data = await startIntake(selectedLang);
@@ -170,11 +314,22 @@ export default function PatientConsultation() {
     isRecordingRef.current = true;
     setTranscriptSync("");
 
+    // Reset WebSpeech coordination variables
+    webSpeechHasResultRef.current = false;
+    webSpeechActiveRef.current = false;
+    whisperFallbackTriggeredRef.current = false;
+    audioBlobRef.current = null;
+
     // 1. Web Speech Recognition (live track)
     if (speechRecognizerRef.current) {
       try {
+        speechRecognizerRef.current.abort();
+      } catch (_) {}
+
+      try {
         speechRecognizerRef.current.lang = recognizerLangRef.current;
         speechRecognizerRef.current.start();
+        webSpeechActiveRef.current = true;
       } catch (e) {
         console.warn("[WebSpeech] start error:", e.message);
       }
@@ -190,52 +345,17 @@ export default function PatientConsultation() {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
 
-      mediaRecorder.onstop = async () => {
+      mediaRecorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
 
-        // Check if Web Speech already got a valid transcript
-        if (transcriptRef.current.trim().length > 0) {
-          setState("WAITING_FOR_PATIENT");
-          return;
-        }
-
-        // Web Speech failed/empty -> Fallback to Whisper
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        if (audioBlob.size < 500) {
-          setState("WAITING_FOR_PATIENT");
-          alert(
-            languageRef.current === "ta"
-              ? "குரல் கண்டறியப்படவில்லை. மீண்டும் மைக் அழுத்திப் பேசவும்."
-              : "No speech detected. Please speak closer to the microphone."
-          );
-          return;
-        }
+        audioBlobRef.current = audioBlob;
 
-        setState("PROCESSING");
-        try {
-          const resp = await transcribeAudio(
-            sessionIdRef.current,
-            languageRef.current,
-            audioBlob
-          );
-          if (resp && resp.success && resp.transcript) {
-            setTranscriptSync(resp.transcript);
-          } else {
-            alert(
-              languageRef.current === "ta"
-                ? "குரல் கண்டறியப்படவில்லை. மீண்டும் முயற்சிக்கவும் அல்லது கீழே தட்டச்சு செய்யவும்."
-                : "Speech not recognized. Please try again or use the text fallback."
-            );
-          }
-        } catch (e) {
-          console.error("[/transcribe] error:", e?.response?.data || e.message);
-          alert(
-            languageRef.current === "ta"
-              ? "குரல் சேவையுடன் இணைக்க முடியவில்லை. தட்டச்சு மூலம் தொடரவும்."
-              : "Transcription service error. Please use the text input below to continue."
-          );
-        } finally {
-          setState("WAITING_FOR_PATIENT");
+        console.log("[MediaRecorder] stopped. WebSpeech active:", webSpeechActiveRef.current, "HasResult:", webSpeechHasResultRef.current);
+
+        // Web Speech failed/empty or wasn't even supported -> Fallback to Whisper
+        if (!webSpeechActiveRef.current && !webSpeechHasResultRef.current) {
+          triggerWhisperFallbackRef.current && triggerWhisperFallbackRef.current();
         }
       };
 
