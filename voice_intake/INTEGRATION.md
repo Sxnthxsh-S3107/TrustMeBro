@@ -11,7 +11,8 @@ The Voice Intake subsystem is an independent REST API service providing:
 2. **Bilingual Intake Flow:** English (`en`) and Tamil (`ta`).
 3. **Deterministic Base Questions:** Standardized 4-question intake sequence.
 4. **Adaptive Follow-up Branching:** Automatic triage follow-up questions tailored to chief complaints (Chest Pain, Headache, Abdominal Pain, Breathing Difficulty).
-5. **Speech-to-Text (ASR):** Powered by OpenAI Whisper with Mock fallback.
+5. **Speech-to-Text (ASR):** Powered by AI4Bharat Indic ASR / OpenAI Whisper with Mock fallback.
+
 6. **Per-Question Raw Transcript Preservation:** Full fidelity preservation of the patient's original native-language speech alongside standardized English clinical entities conforming to `contracts/intake_schema.json`.
 
 ---

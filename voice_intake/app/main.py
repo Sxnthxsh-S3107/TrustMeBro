@@ -16,11 +16,11 @@ from dotenv import load_dotenv
 
 try:
     from voice_intake.app.question_flow import SessionManager
-    from voice_intake.app.asr import get_asr_service, WhisperASRService, MockASRService
+    from voice_intake.app.asr import get_asr_service, WhisperASRService, MockASRService, AI4BharatASRService
     from voice_intake.app.tts import TTSServiceBackend
 except ImportError:
     from question_flow import SessionManager
-    from asr import get_asr_service, WhisperASRService, MockASRService
+    from asr import get_asr_service, WhisperASRService, MockASRService, AI4BharatASRService
     from tts import TTSServiceBackend
 
 load_dotenv()
@@ -78,15 +78,24 @@ def health_check():
     if request.method == "OPTIONS":
         return "", 200
 
-    backend_name = "whisper" if isinstance(asr_service, WhisperASRService) else "mock"
-    has_api_key = bool(os.getenv("OPENAI_API_KEY"))
+    if isinstance(asr_service, AI4BharatASRService):
+        backend_name = "ai4bharat"
+        has_api_key = bool(os.getenv("AI4BHARAT_API_KEY") or os.getenv("BHASHINI_API_KEY"))
+    elif isinstance(asr_service, WhisperASRService):
+        backend_name = "whisper"
+        has_api_key = bool(os.getenv("OPENAI_API_KEY"))
+    else:
+        backend_name = "mock"
+        has_api_key = True
+
     return jsonify({
         "status": "ok",
         "service": "voice_intake",
         "asr_backend": backend_name,
-        "whisper_configured": has_api_key,
+        "asr_configured": has_api_key,
         "supported_languages": ["en", "ta"]
     }), 200
+
 
 
 @app.route("/languages", methods=["GET", "OPTIONS"])
